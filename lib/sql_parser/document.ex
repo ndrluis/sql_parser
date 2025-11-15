@@ -125,3 +125,47 @@ end
 defmodule SqlParser.Offset do
   defstruct [:value, :rows]
 end
+
+# =============================================================================
+# Function Support Structures
+# =============================================================================
+
+defmodule SqlParser.Function do
+  defstruct [:name, :uses_odbc_syntax, :parameters, :args, :filter, :null_treatment, :over]
+end
+
+defmodule SqlParser.FunctionArguments do
+  defstruct [:type, :value]
+end
+
+defmodule SqlParser.FunctionArgumentList do
+  defstruct [:duplicate_treatment, :args, :clauses]
+end
+
+defmodule SqlParser.FunctionArg do
+  defstruct [:type, :name, :arg, :operator]
+end
+
+defmodule SqlParser.FunctionArgExpr do
+  defstruct [:type, :value]
+end
+
+defmodule SqlParser.WindowType do
+  defstruct [:type, :value]
+end
+
+defmodule SqlParser.WindowSpec do
+  defstruct [:window_name, :partition_by, :order_by, :window_frame]
+end
+
+defmodule SqlParser.WindowFrame do
+  defstruct [:units, :start_bound, :end_bound]
+end
+
+defmodule SqlParser.WindowFrameBound do
+  defstruct [:type, :value]
+end
+
+defmodule SqlParser.FunctionArgumentClause do
+  defstruct [:type, :value]
+end

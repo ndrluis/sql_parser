@@ -225,4 +225,181 @@ defmodule SqlParserTest do
       assert expected_selection == selection
     end
   end
+
+  describe "function parsing" do
+    test "scalar function - no args" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT CURRENT_TIMESTAMP")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  name: %SqlParser.ObjectName{
+                    names: [%SqlParser.Ident{value: "CURRENT_TIMESTAMP"}]
+                  },
+                  args: %SqlParser.FunctionArguments{type: :none}
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "scalar function - with single arg" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT UPPER(name) FROM users")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  name: %SqlParser.ObjectName{
+                    names: [%SqlParser.Ident{value: "UPPER"}]
+                  },
+                  args: %SqlParser.FunctionArguments{
+                    type: :list
+                  }
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "scalar function - multiple args" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT CONCAT(first_name, ' ', last_name) FROM users")
+    end
+
+    test "aggregate function - COUNT(*)" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT COUNT(*) FROM users")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  name: %SqlParser.ObjectName{
+                    names: [%SqlParser.Ident{value: "COUNT"}]
+                  },
+                  args: %SqlParser.FunctionArguments{
+                    type: :list,
+                    value: %SqlParser.FunctionArgumentList{
+                      args: [
+                        %SqlParser.FunctionArg{
+                          type: :unnamed,
+                          arg: %SqlParser.FunctionArgExpr{type: :wildcard}
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "aggregate function - with DISTINCT" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT COUNT(DISTINCT user_id) FROM orders")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  args: %SqlParser.FunctionArguments{
+                    type: :list,
+                    value: %SqlParser.FunctionArgumentList{
+                      duplicate_treatment: :distinct
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "aggregate function - with FILTER" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT COUNT(*) FILTER (WHERE active = true) FROM users")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  filter: %SqlParser.Expr{type: :binary_op}
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "window function - simple OVER()" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT ROW_NUMBER() OVER() FROM users")
+    end
+
+    test "window function - with PARTITION BY" do
+      assert {:ok, [query]} = SqlParser.parse("SELECT ROW_NUMBER() OVER(PARTITION BY department) FROM users")
+
+      assert %SqlParser.Query{
+        body: %SqlParser.Select{
+          projection: [
+            %SqlParser.UnnamedExpr{
+              expr: %SqlParser.Expr{
+                type: :function,
+                value: %SqlParser.Function{
+                  over: %SqlParser.WindowType{
+                    type: :window_spec,
+                    value: %SqlParser.WindowSpec{
+                      partition_by: [%SqlParser.Expr{type: :identifier}]
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      } = query
+    end
+
+    test "window function - with ORDER BY" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT ROW_NUMBER() OVER(ORDER BY salary DESC) FROM users")
+    end
+
+    test "window function - complete" do
+      assert {:ok, [_query]} = SqlParser.parse(
+        "SELECT RANK() OVER(PARTITION BY department ORDER BY salary DESC) FROM users"
+      )
+    end
+
+    test "nested functions" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT UPPER(CONCAT(first_name, last_name)) FROM users")
+    end
+
+    test "function in WHERE clause" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT * FROM users WHERE LENGTH(name) > 5")
+    end
+
+    test "multiple aggregate functions" do
+      assert {:ok, [_query]} = SqlParser.parse("SELECT COUNT(*), SUM(amount), AVG(price) FROM orders")
+    end
+  end
 end

@@ -36,6 +36,68 @@ mod result_atoms {
         not_implemented
     }
 }
+
+mod function_atoms {
+    rustler::atoms! {
+        // Core function type
+        function,
+
+        // FunctionArguments types
+        none,
+        subquery,
+        list,
+
+        // FunctionArg types
+        named,
+        expr_named,
+        unnamed,
+
+        // FunctionArgExpr types
+        expr,
+        qualified_wildcard,
+        wildcard,
+
+        // FunctionArgOperator
+        equals,
+        right_arrow,
+        assignment,
+        colon,
+        value,
+
+        // DuplicateTreatment
+        distinct,
+        all,
+
+        // NullTreatment
+        ignore_nulls,
+        respect_nulls,
+
+        // WindowType
+        window_spec,
+        named_window,
+
+        // WindowFrameUnits
+        rows,
+        range,
+        groups,
+
+        // WindowFrameBound types
+        current_row,
+        preceding,
+        following,
+        unbounded_preceding,
+        unbounded_following,
+
+        // FunctionArgumentClause types
+        ignore_or_respect_nulls,
+        order_by,
+        limit,
+        on_overflow,
+        having_min,
+        having_max,
+        separator
+    }
+}
 #[derive(NifStruct)]
 // #[rustler(encode)]
 #[module = "SqlParser.Document"]
@@ -50,7 +112,7 @@ impl Document {
                 .iter()
                 .map(|s| match s {
                     sqlparser::ast::Statement::Query(query) => {
-                        Statement::Query(Query::new(*query.clone()))
+                        Statement::Query(Box::new(Query::new(*query.clone())))
                     }
 
                     _ => Statement::NotImplemented(result_atoms::not_implemented()),
@@ -116,6 +178,7 @@ impl From<Expr> for sqlparser::ast::Expr {
                 sqlparser::ast::Expr::Identifier(sqlparser::ast::Ident {
                     value: ident.value,
                     quote_style: None,
+                    span: sqlparser::tokenizer::Span::empty(),
                 })
             }
             ExprEnum::CompoundIdentifier(idents) => sqlparser::ast::Expr::CompoundIdentifier(
@@ -124,11 +187,15 @@ impl From<Expr> for sqlparser::ast::Expr {
                     .map(|i| sqlparser::ast::Ident {
                         value: i.value.clone(),
                         quote_style: None,
+                        span: sqlparser::tokenizer::Span::empty(),
                     })
                     .collect(),
             ),
             ExprEnum::Value(value) => {
-                sqlparser::ast::Expr::Value(sqlparser::ast::Value::from(value))
+                sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan {
+                    value: sqlparser::ast::Value::from(value),
+                    span: sqlparser::tokenizer::Span::empty(),
+                })
             }
             ExprEnum::BinaryOp(op) => sqlparser::ast::Expr::BinaryOp {
                 left: Box::new(sqlparser::ast::Expr::from(*op.left.clone())),
@@ -163,6 +230,9 @@ impl From<Expr> for sqlparser::ast::Expr {
                 expr: Box::new(sqlparser::ast::Expr::from(*op.expr.clone())),
                 op: sqlparser::ast::UnaryOperator::from(op.op),
             },
+            ExprEnum::Function(func) => {
+                sqlparser::ast::Expr::Function(sqlparser::ast::Function::from(func))
+            }
             ExprEnum::SimilarTo(..)
             | ExprEnum::Nested(..)
             | ExprEnum::NotImplemented(..)
@@ -178,6 +248,7 @@ impl From<Expr> for sqlparser::ast::Expr {
                 sqlparser::ast::Expr::Identifier(sqlparser::ast::Ident {
                     value: "abd".to_string(),
                     quote_style: None,
+                    span: sqlparser::tokenizer::Span::empty(),
                 })
             }
         }
@@ -190,16 +261,13 @@ impl From<SelectItem> for sqlparser::ast::SelectItem {
                 sqlparser::ast::SelectItem::UnnamedExpr(sqlparser::ast::Expr::from(expr))
             }
             SelectItem::Wildcard(_) => {
-                sqlparser::ast::SelectItem::Wildcard(sqlparser::ast::WildcardAdditionalOptions {
-                    opt_exclude: None,
-                    opt_except: None,
-                    opt_rename: None,
-                })
+                sqlparser::ast::SelectItem::Wildcard(sqlparser::ast::WildcardAdditionalOptions::default())
             }
             _ => sqlparser::ast::SelectItem::UnnamedExpr(sqlparser::ast::Expr::Identifier(
                 sqlparser::ast::Ident {
                     value: "abd".to_string(),
                     quote_style: None,
+                    span: sqlparser::tokenizer::Span::empty(),
                 },
             )),
         }
@@ -210,18 +278,18 @@ impl From<Ident> for sqlparser::ast::Ident {
         sqlparser::ast::Ident {
             value: ident.value,
             quote_style: None,
+            span: sqlparser::tokenizer::Span::empty(),
         }
     }
 }
 impl From<ObjectName> for sqlparser::ast::ObjectName {
     fn from(object_name: ObjectName) -> Self {
-        sqlparser::ast::ObjectName(
-            object_name
-                .names
-                .iter()
-                .map(|l| sqlparser::ast::Ident::from(l.clone()))
-                .collect(),
-        )
+        let idents: Vec<sqlparser::ast::Ident> = object_name
+            .names
+            .iter()
+            .map(|l| sqlparser::ast::Ident::from(l.clone()))
+            .collect();
+        sqlparser::ast::ObjectName::from(idents)
     }
 }
 impl From<TableFactor> for sqlparser::ast::TableFactor {
@@ -233,12 +301,24 @@ impl From<TableFactor> for sqlparser::ast::TableFactor {
                 alias: None,
                 args: None,
                 with_hints: [].to_vec(),
+                version: None,
+                with_ordinality: false,
+                partitions: vec![],
+                json_path: None,
+                sample: None,
+                index_hints: vec![],
             },
             _ => sqlparser::ast::TableFactor::Table {
                 name,
                 alias: None,
                 args: None,
                 with_hints: [].to_vec(),
+                version: None,
+                with_ordinality: false,
+                partitions: vec![],
+                json_path: None,
+                sample: None,
+                index_hints: vec![],
             },
         }
     }
@@ -253,6 +333,7 @@ impl From<Join> for sqlparser::ast::Join {
         sqlparser::ast::Join {
             relation: sqlparser::ast::TableFactor::from(join.relation),
             join_operator: sqlparser::ast::JoinOperator::from(join.join_operator),
+            global: false,
         }
     }
 }
@@ -272,8 +353,11 @@ impl From<OrderByExpr> for sqlparser::ast::OrderByExpr {
     fn from(order_by_expr: OrderByExpr) -> Self {
         sqlparser::ast::OrderByExpr {
             expr: sqlparser::ast::Expr::from(order_by_expr.expr),
-            asc: order_by_expr.asc,
-            nulls_first: order_by_expr.nulls_first,
+            options: sqlparser::ast::OrderByOptions {
+                asc: order_by_expr.asc,
+                nulls_first: order_by_expr.nulls_first,
+            },
+            with_fill: None,
         }
     }
 }
@@ -282,7 +366,7 @@ impl From<SetExpr> for sqlparser::ast::SetExpr {
         match setexpr {
             SetExpr::Select(select) => {
                 sqlparser::ast::SetExpr::Select(Box::new(sqlparser::ast::Select {
-                    distinct: select.distinct,
+                    distinct: if select.distinct { Some(sqlparser::ast::Distinct::Distinct) } else { None },
                     top: None,
                     projection: select
                         .projection
@@ -297,11 +381,14 @@ impl From<SetExpr> for sqlparser::ast::SetExpr {
                         .collect(),
                     lateral_views: [].to_vec(),
                     selection: select.selection.map(sqlparser::ast::Expr::from),
-                    group_by: select
-                        .group_by
-                        .iter()
-                        .map(|l| sqlparser::ast::Expr::from(l.clone()))
-                        .collect(),
+                    group_by: sqlparser::ast::GroupByExpr::Expressions(
+                        select
+                            .group_by
+                            .iter()
+                            .map(|l| sqlparser::ast::Expr::from(l.clone()))
+                            .collect(),
+                        vec![],
+                    ),
                     cluster_by: [].to_vec(),
                     distribute_by: [].to_vec(),
                     sort_by: select
@@ -311,22 +398,38 @@ impl From<SetExpr> for sqlparser::ast::SetExpr {
                         .collect(),
                     having: select.having.map(sqlparser::ast::Expr::from),
                     qualify: None,
+                    connect_by: None,
+                    named_window: vec![],
+                    window_before_qualify: false,
+                    value_table_mode: None,
+                    prewhere: None,
+                    flavor: sqlparser::ast::SelectFlavor::Standard,
+                    select_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                    top_before_distinct: false,
                 }))
             }
             _ => sqlparser::ast::SetExpr::Select(Box::new(sqlparser::ast::Select {
-                distinct: false,
+                distinct: None,
                 top: None,
                 projection: [].to_vec(),
                 into: None,
                 from: [].to_vec(),
                 lateral_views: [].to_vec(),
                 selection: None,
-                group_by: [].to_vec(),
+                group_by: sqlparser::ast::GroupByExpr::Expressions(vec![], vec![]),
                 cluster_by: [].to_vec(),
                 distribute_by: [].to_vec(),
                 sort_by: [].to_vec(),
                 having: None,
                 qualify: None,
+                connect_by: None,
+                named_window: vec![],
+                window_before_qualify: false,
+                value_table_mode: None,
+                prewhere: None,
+                flavor: sqlparser::ast::SelectFlavor::Standard,
+                select_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                top_before_distinct: false,
             })),
         }
     }
@@ -337,43 +440,68 @@ impl From<Statement> for sqlparser::ast::Statement {
             Statement::Query(query) => {
                 sqlparser::ast::Statement::Query(Box::new(sqlparser::ast::Query {
                     body: Box::new(sqlparser::ast::SetExpr::from(query.body)),
-                    limit: query.limit.map(sqlparser::ast::Expr::from),
+                    limit_clause: query.limit.map(|expr| sqlparser::ast::LimitClause::LimitOffset {
+                        limit: Some(sqlparser::ast::Expr::from(expr)),
+                        offset: None,
+                        limit_by: vec![],
+                    }),
                     with: None,
-                    order_by: query
-                        .order_by
-                        .iter()
-                        .map(|l| sqlparser::ast::OrderByExpr::from(l.clone()))
-                        .collect(),
+                    order_by: if query.order_by.is_empty() {
+                        None
+                    } else {
+                        Some(sqlparser::ast::OrderBy {
+                            kind: sqlparser::ast::OrderByKind::Expressions(
+                                query
+                                    .order_by
+                                    .iter()
+                                    .map(|l| sqlparser::ast::OrderByExpr::from(l.clone()))
+                                    .collect()
+                            ),
+                            interpolate: None,
+                        })
+                    },
                     locks: [].to_vec(),
                     fetch: None,
-                    offset: None,
+                    for_clause: None,
+                    settings: None,
+                    format_clause: None,
                 }))
             }
             _ => sqlparser::ast::Statement::Query(Box::new(sqlparser::ast::Query {
                 body: Box::new(sqlparser::ast::SetExpr::Select(Box::new(
                     sqlparser::ast::Select {
-                        distinct: false,
+                        distinct: None,
                         top: None,
                         projection: [].to_vec(),
                         into: None,
                         from: [].to_vec(),
                         lateral_views: [].to_vec(),
                         selection: None,
-                        group_by: [].to_vec(),
+                        group_by: sqlparser::ast::GroupByExpr::Expressions(vec![], vec![]),
                         cluster_by: [].to_vec(),
                         distribute_by: [].to_vec(),
                         sort_by: [].to_vec(),
                         having: None,
                         qualify: None,
+                        connect_by: None,
+                        named_window: vec![],
+                        window_before_qualify: false,
+                        value_table_mode: None,
+                        prewhere: None,
+                        flavor: sqlparser::ast::SelectFlavor::Standard,
+                        select_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
+                        top_before_distinct: false,
                     },
                 ))),
 
-                limit: None,
+                limit_clause: None,
                 with: None,
-                order_by: [].to_vec(),
+                order_by: None,
                 locks: [].to_vec(),
                 fetch: None,
-                offset: None,
+                for_clause: None,
+                settings: None,
+                format_clause: None,
             })),
         }
     }
@@ -479,7 +607,9 @@ impl From<sqlparser::ast::JoinConstraint> for JoinConstraint {
             },
             sqlparser::ast::JoinConstraint::Using(ident) => JoinConstraint {
                 constraint: JoinConstraintEnum::Using(
-                    ident.iter().map(|i| Ident::from(i.clone())).collect(),
+                    ident.iter().flat_map(|name| {
+                        name.0.iter().filter_map(|part| part.as_ident()).map(|i| Ident::from(i.clone())).collect::<Vec<_>>()
+                    }).collect(),
                 ),
                 kind: join_constraints_atoms::using(),
             },
@@ -525,7 +655,7 @@ pub enum JoinOperatorEnum {
     LeftOuter(JoinConstraint),
     RightOuter(JoinConstraint),
     FullOuter(JoinConstraint),
-    // CrossJoin,
+    CrossJoin(JoinConstraint),
     LeftSemi(JoinConstraint),
     RightSemi(JoinConstraint),
     LeftAnti(JoinConstraint),
@@ -553,7 +683,13 @@ impl From<sqlparser::ast::JoinOperator> for JoinOperator {
                 kind: join_operator_atoms::full_outer(),
                 operator: JoinOperatorEnum::FullOuter(JoinConstraint::from(constraint)),
             },
-            // sqlparser::ast::JoinOperator::CrossJoin => JoinOperator{ operator: JoinOperatorEnum::CrossJoin, },
+            sqlparser::ast::JoinOperator::CrossJoin => JoinOperator {
+                kind: join_operator_atoms::cross_join(),
+                operator: JoinOperatorEnum::CrossJoin(JoinConstraint {
+                    constraint: JoinConstraintEnum::None(join_constraints_atoms::none()),
+                    kind: join_constraints_atoms::none(),
+                }),
+            },
             sqlparser::ast::JoinOperator::LeftSemi(constraint) => JoinOperator {
                 kind: join_operator_atoms::left_semi(),
                 operator: JoinOperatorEnum::LeftSemi(JoinConstraint::from(constraint)),
@@ -570,7 +706,11 @@ impl From<sqlparser::ast::JoinOperator> for JoinOperator {
                 kind: join_operator_atoms::right_anti(),
                 operator: JoinOperatorEnum::RightAnti(JoinConstraint::from(constraint)),
             },
-            _ => todo!(),
+            sqlparser::ast::JoinOperator::Join(constraint) => JoinOperator {
+                kind: join_operator_atoms::inner(),
+                operator: JoinOperatorEnum::Inner(JoinConstraint::from(constraint)),
+            },
+            _ => panic!("Unsupported join operator: {:?}", join_operator),
             // sqlparser::ast::JoinOperator::CrossApply => JoinOperator{ operator: JoinOperatorEnum::CrossApply, },
             // sqlparser::ast::JoinOperator::OuterApply => JoinOperator{ operator: JoinOperatorEnum::OuterApply },
         }
@@ -653,7 +793,7 @@ impl From<sqlparser::ast::TableFactor> for TableFactor {
         match table_factor {
             sqlparser::ast::TableFactor::Table { name, .. } => TableFactor::Table(Table {
                 name: ObjectName {
-                    names: name.0.iter().map(|p| Ident::from(p.clone())).collect(),
+                    names: name.0.iter().filter_map(|p| p.as_ident()).map(|i| Ident::from(i.clone())).collect(),
                 },
             }),
             sqlparser::ast::TableFactor::NestedJoin { .. } => {
@@ -665,7 +805,14 @@ impl From<sqlparser::ast::TableFactor> for TableFactor {
             sqlparser::ast::TableFactor::TableFunction { .. } => {
                 TableFactor::NotImplemented(result_atoms::not_implemented())
             }
-            sqlparser::ast::TableFactor::UNNEST { .. } => {
+            sqlparser::ast::TableFactor::UNNEST { .. }
+            | sqlparser::ast::TableFactor::Function { .. }
+            | sqlparser::ast::TableFactor::JsonTable { .. }
+            | sqlparser::ast::TableFactor::OpenJsonTable { .. }
+            | sqlparser::ast::TableFactor::Unpivot { .. }
+            | sqlparser::ast::TableFactor::Pivot { .. }
+            | sqlparser::ast::TableFactor::MatchRecognize { .. }
+            | sqlparser::ast::TableFactor::XmlTable { .. } => {
                 TableFactor::NotImplemented(result_atoms::not_implemented())
             }
         }
@@ -739,7 +886,7 @@ impl From<sqlparser::ast::BinaryOperator> for BinaryOperator {
             sqlparser::ast::BinaryOperator::PGRegexIMatch => Self::PGRegexIMatch,
             sqlparser::ast::BinaryOperator::PGRegexNotMatch => Self::PGRegexNotMatch,
             sqlparser::ast::BinaryOperator::PGRegexNotIMatch => Self::PGRegexNotIMatch,
-            sqlparser::ast::BinaryOperator::PGCustomBinaryOperator(_) => Self::NotImplemented,
+            _ => Self::NotImplemented,
         }
     }
 }
@@ -768,6 +915,7 @@ impl From<sqlparser::ast::UnaryOperator> for UnaryOperator {
             sqlparser::ast::UnaryOperator::PGPostfixFactorial => Self::PGPostfixFactorial,
             sqlparser::ast::UnaryOperator::PGPrefixFactorial => Self::PGPrefixFactorial,
             sqlparser::ast::UnaryOperator::PGAbs => Self::PGAbs,
+            _ => Self::Not, // Default to Not for unhandled cases
         }
     }
 }
@@ -856,7 +1004,7 @@ impl From<sqlparser::ast::Value> for Value {
             sqlparser::ast::Value::Boolean(boolean) => Self::Boolean(Boolean { value: boolean }),
             sqlparser::ast::Value::Null => Self::Null(Null {}),
             sqlparser::ast::Value::Placeholder(placeholder) => Self::Placeholder(placeholder),
-            sqlparser::ast::Value::UnQuotedString(string) => Self::UnQuotedString(string),
+            _ => Self::NotImplemented(result_atoms::not_implemented()),
         }
     }
 }
@@ -961,6 +1109,7 @@ pub enum ExprEnum {
     AllOp(Box<Expr>),
     Nested(Box<Expr>),
     Value(Value),
+    Function(Function),
     NotImplemented(Atom),
 }
 #[derive(NifStruct, Clone)]
@@ -983,13 +1132,6 @@ impl Expr {
                 value: ExprEnum::CompoundIdentifier(
                     idents.iter().map(|p| Ident::from(p.clone())).collect(),
                 ),
-            },
-            sqlparser::ast::Expr::CompositeAccess { expr, key } => Expr {
-                r#type: type_atoms::composite_access(),
-                value: ExprEnum::CompositeAccess(CompositeAccess {
-                    expr: Box::new(Expr::new(*expr)),
-                    key: Ident::from(key),
-                }),
             },
             sqlparser::ast::Expr::IsFalse(expr) => Expr {
                 r#type: type_atoms::is_false(),
@@ -1043,7 +1185,17 @@ impl Expr {
                 r#type: type_atoms::in_subquery(),
                 value: ExprEnum::InSubquery(InSubquery {
                     expr: Box::new(Expr::new(*expr)),
-                    subquery: Box::new(Query::new(*subquery)),
+                    subquery: Box::new(Query::new(sqlparser::ast::Query {
+                        body: subquery,
+                        with: None,
+                        order_by: None,
+                        limit_clause: None,
+                        fetch: None,
+                        locks: vec![],
+                        for_clause: None,
+                        settings: None,
+                        format_clause: None,
+                    })),
                     negated,
                 }),
             },
@@ -1086,6 +1238,7 @@ impl Expr {
                 expr,
                 pattern,
                 escape_char,
+                any: _,
             } => Expr {
                 r#type: type_atoms::like(),
                 value: ExprEnum::Like(Like {
@@ -1100,6 +1253,7 @@ impl Expr {
                 expr,
                 pattern,
                 escape_char,
+                any: _,
             } => Expr {
                 r#type: type_atoms::ilike(),
                 value: ExprEnum::ILike(ILike {
@@ -1123,13 +1277,13 @@ impl Expr {
                     escape_char: escape_char.map(|c| c.to_string()),
                 }),
             },
-            sqlparser::ast::Expr::AnyOp(expr) => Expr {
-                r#type: type_atoms::any_op(),
-                value: ExprEnum::AnyOp(Box::new(Expr::new(*expr))),
+            sqlparser::ast::Expr::AnyOp { .. } => Expr {
+                r#type: result_atoms::not_implemented(),
+                value: ExprEnum::NotImplemented(result_atoms::not_implemented()),
             },
-            sqlparser::ast::Expr::AllOp(expr) => Expr {
-                r#type: type_atoms::all_op(),
-                value: ExprEnum::AllOp(Box::new(Expr::new(*expr))),
+            sqlparser::ast::Expr::AllOp { .. } => Expr {
+                r#type: result_atoms::not_implemented(),
+                value: ExprEnum::NotImplemented(result_atoms::not_implemented()),
             },
             sqlparser::ast::Expr::Nested(expr) => Expr {
                 r#type: type_atoms::nested(),
@@ -1144,11 +1298,13 @@ impl Expr {
             },
             sqlparser::ast::Expr::Value(value) => Expr {
                 r#type: type_atoms::value(),
-                value: ExprEnum::Value(value.into()),
+                value: ExprEnum::Value(Value::from(value.value)),
             },
-            sqlparser::ast::Expr::SafeCast { .. }
-            | sqlparser::ast::Expr::TryCast { .. }
-            | sqlparser::ast::Expr::Cast { .. }
+            sqlparser::ast::Expr::Function(func) => Expr {
+                r#type: function_atoms::function(),
+                value: ExprEnum::Function(Function::from(func)),
+            },
+            sqlparser::ast::Expr::Cast { .. }
             | sqlparser::ast::Expr::JsonAccess { .. }
             | sqlparser::ast::Expr::IsDistinctFrom(_, _)
             | sqlparser::ast::Expr::AtTimeZone { .. }
@@ -1161,24 +1317,21 @@ impl Expr {
             | sqlparser::ast::Expr::Overlay { .. }
             | sqlparser::ast::Expr::Collate { .. }
             | sqlparser::ast::Expr::TypedString { .. }
-            | sqlparser::ast::Expr::MapAccess { .. }
-            | sqlparser::ast::Expr::Function(_)
-            | sqlparser::ast::Expr::AggregateExpressionWithFilter { .. }
             | sqlparser::ast::Expr::Case { .. }
             | sqlparser::ast::Expr::Exists { .. }
             | sqlparser::ast::Expr::Subquery { .. }
-            | sqlparser::ast::Expr::ArraySubquery(_)
-            | sqlparser::ast::Expr::ListAgg(_)
-            | sqlparser::ast::Expr::ArrayAgg(_)
             | sqlparser::ast::Expr::GroupingSets(_)
             | sqlparser::ast::Expr::Cube(_)
             | sqlparser::ast::Expr::Rollup(_)
             | sqlparser::ast::Expr::Tuple(_)
-            | sqlparser::ast::Expr::ArrayIndex { .. }
             | sqlparser::ast::Expr::Array(_)
             | sqlparser::ast::Expr::Interval { .. }
             | sqlparser::ast::Expr::MatchAgainst { .. }
             | sqlparser::ast::Expr::IsNotDistinctFrom(_, _) => Expr {
+                r#type: result_atoms::not_implemented(),
+                value: ExprEnum::NotImplemented(result_atoms::not_implemented()),
+            },
+            _ => Expr {
                 r#type: result_atoms::not_implemented(),
                 value: ExprEnum::NotImplemented(result_atoms::not_implemented()),
             },
@@ -1207,7 +1360,7 @@ pub struct Select {
 impl Select {
     pub fn new(ast: sqlparser::ast::Select) -> Self {
         Self {
-            distinct: ast.distinct,
+            distinct: ast.distinct.is_some(),
             projection: ast
                 .projection
                 .iter()
@@ -1231,11 +1384,12 @@ impl Select {
                 .collect(),
             from: ast.from.iter().map(TableWithJoins::new).collect(),
             selection: ast.selection.map(Expr::new),
-            group_by: ast
-                .group_by
-                .iter()
-                .map(|expr| Expr::new(expr.clone()))
-                .collect(),
+            group_by: match &ast.group_by {
+                sqlparser::ast::GroupByExpr::Expressions(exprs, _) => {
+                    exprs.iter().map(|expr| Expr::new(expr.clone())).collect()
+                }
+                _ => vec![],
+            },
             sort_by: ast
                 .sort_by
                 .iter()
@@ -1306,16 +1460,21 @@ impl From<sqlparser::ast::SetExpr> for SetExpr {
                     sqlparser::ast::SetOperator::Union => SetOperator::Union,
                     sqlparser::ast::SetOperator::Except => SetOperator::Except,
                     sqlparser::ast::SetOperator::Intersect => SetOperator::Intersect,
+                    sqlparser::ast::SetOperator::Minus => SetOperator::Except, // Use Except as fallback
                 },
                 set_quantifier: match set_quantifier {
                     sqlparser::ast::SetQuantifier::All => SetQuantifier::All,
                     sqlparser::ast::SetQuantifier::Distinct => SetQuantifier::Distinct,
                     sqlparser::ast::SetQuantifier::None => SetQuantifier::None,
+                    _ => SetQuantifier::None, // Default to None for new variants
                 },
                 left: Box::new((*left).into()),
                 right: Box::new((*right).into()),
             }),
-            sqlparser::ast::SetExpr::Insert(_) | sqlparser::ast::SetExpr::Table(_) => {
+            sqlparser::ast::SetExpr::Insert(_) 
+            | sqlparser::ast::SetExpr::Table(_)
+            | sqlparser::ast::SetExpr::Update(_)
+            | sqlparser::ast::SetExpr::Delete(_) => {
                 SetExpr::NotImplemented(result_atoms::not_implemented())
             }
         }
@@ -1326,27 +1485,584 @@ impl Query {
     pub fn new(ast: sqlparser::ast::Query) -> Self {
         Self {
             body: (*ast.body).into(),
-            order_by: ast
-                .order_by
-                .iter()
-                .map(|order_by_expr| OrderByExpr {
-                    expr: Expr::new(order_by_expr.expr.clone()),
-                    asc: order_by_expr.asc,
-                    nulls_first: order_by_expr.nulls_first,
-                })
-                .collect(),
-            limit: ast.limit.map(Expr::new),
-            offset: match ast.offset {
-                Some(offset) => Some(Offset {
-                    value: Expr::new(offset.value),
+            order_by: match &ast.order_by {
+                Some(order_by) => match &order_by.kind {
+                    sqlparser::ast::OrderByKind::Expressions(exprs) => {
+                        exprs.iter().map(|order_by_expr| OrderByExpr {
+                            expr: Expr::new(order_by_expr.expr.clone()),
+                            asc: order_by_expr.options.asc,
+                            nulls_first: order_by_expr.options.nulls_first,
+                        })
+                        .collect()
+                    }
+                    _ => vec![],
+                },
+                None => vec![],
+            },
+            limit: match &ast.limit_clause {
+                Some(sqlparser::ast::LimitClause::LimitOffset { limit, .. }) => limit.clone().map(Expr::new),
+                _ => None,
+            },
+            offset: match &ast.limit_clause {
+                Some(sqlparser::ast::LimitClause::LimitOffset { offset: Some(offset), .. }) => Some(Offset {
+                    value: Expr::new(offset.value.clone()),
                     rows: match offset.rows {
                         sqlparser::ast::OffsetRows::None => OffsetRows::None,
                         sqlparser::ast::OffsetRows::Row => OffsetRows::Row,
                         sqlparser::ast::OffsetRows::Rows => OffsetRows::Rows,
                     },
                 }),
-                None => None,
+                _ => None,
             },
+        }
+    }
+}
+
+// =============================================================================
+// Function Support Structures
+// =============================================================================
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.Function"]
+pub struct Function {
+    pub name: ObjectName,
+    pub uses_odbc_syntax: bool,
+    pub parameters: FunctionArguments,
+    pub args: FunctionArguments,
+    pub filter: Option<Box<Expr>>,
+    pub null_treatment: Option<Atom>,
+    pub over: Option<WindowType>,
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.FunctionArguments"]
+pub struct FunctionArguments {
+    pub r#type: Atom,
+    pub value: FunctionArgumentsValue,
+}
+
+#[derive(NifUntaggedEnum, Clone)]
+pub enum FunctionArgumentsValue {
+    None(Atom),
+    Subquery(Box<Query>),
+    List(FunctionArgumentList),
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.FunctionArgumentList"]
+pub struct FunctionArgumentList {
+    pub duplicate_treatment: Option<Atom>,
+    pub args: Vec<FunctionArg>,
+    pub clauses: Vec<FunctionArgumentClause>,
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.FunctionArg"]
+pub struct FunctionArg {
+    pub r#type: Atom,
+    pub name: Option<FunctionArgName>,
+    pub arg: FunctionArgExpr,
+    pub operator: Option<Atom>,
+}
+
+#[derive(NifUntaggedEnum, Clone)]
+pub enum FunctionArgName {
+    Ident(Ident),
+    Expr(Expr),
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.FunctionArgExpr"]
+pub struct FunctionArgExpr {
+    pub r#type: Atom,
+    pub value: FunctionArgExprValue,
+}
+
+#[derive(NifUntaggedEnum, Clone)]
+pub enum FunctionArgExprValue {
+    Expr(Expr),
+    QualifiedWildcard(ObjectName),
+    Wildcard(Atom),
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.WindowType"]
+pub struct WindowType {
+    pub r#type: Atom,
+    pub value: WindowTypeValue,
+}
+
+#[derive(NifUntaggedEnum, Clone)]
+pub enum WindowTypeValue {
+    WindowSpec(WindowSpec),
+    NamedWindow(Ident),
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.WindowSpec"]
+pub struct WindowSpec {
+    pub window_name: Option<Ident>,
+    pub partition_by: Vec<Expr>,
+    pub order_by: Vec<OrderByExpr>,
+    pub window_frame: Option<WindowFrame>,
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.WindowFrame"]
+pub struct WindowFrame {
+    pub units: Atom,
+    pub start_bound: WindowFrameBound,
+    pub end_bound: Option<WindowFrameBound>,
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.WindowFrameBound"]
+pub struct WindowFrameBound {
+    pub r#type: Atom,
+    pub value: Option<Box<Expr>>,
+}
+
+#[derive(NifStruct, Clone)]
+#[module = "SqlParser.FunctionArgumentClause"]
+pub struct FunctionArgumentClause {
+    pub r#type: Atom,
+    pub value: FunctionArgumentClauseValue,
+}
+
+#[derive(NifUntaggedEnum, Clone)]
+pub enum FunctionArgumentClauseValue {
+    IgnoreOrRespectNulls(Atom),
+    OrderBy(Vec<OrderByExpr>),
+    Limit(Expr),
+    NotImplemented(Atom),
+}
+
+// =============================================================================
+// Function From Implementations (sqlparser → Elixir)
+// =============================================================================
+
+impl From<sqlparser::ast::Function> for Function {
+    fn from(func: sqlparser::ast::Function) -> Self {
+        Self {
+            name: ObjectName {
+                names: func.name.0
+                    .iter()
+                    .filter_map(|p| p.as_ident())
+                    .map(|i| Ident::from(i.clone()))
+                    .collect(),
+            },
+            uses_odbc_syntax: func.uses_odbc_syntax,
+            parameters: FunctionArguments::from(func.parameters),
+            args: FunctionArguments::from(func.args),
+            filter: func.filter.map(|e| Box::new(Expr::new(*e))),
+            null_treatment: func.null_treatment.map(|nt| match nt {
+                sqlparser::ast::NullTreatment::IgnoreNulls => function_atoms::ignore_nulls(),
+                sqlparser::ast::NullTreatment::RespectNulls => function_atoms::respect_nulls(),
+            }),
+            over: func.over.map(WindowType::from),
+        }
+    }
+}
+
+impl From<sqlparser::ast::FunctionArguments> for FunctionArguments {
+    fn from(args: sqlparser::ast::FunctionArguments) -> Self {
+        match args {
+            sqlparser::ast::FunctionArguments::None => Self {
+                r#type: function_atoms::none(),
+                value: FunctionArgumentsValue::None(function_atoms::none()),
+            },
+            sqlparser::ast::FunctionArguments::Subquery(query) => Self {
+                r#type: function_atoms::subquery(),
+                value: FunctionArgumentsValue::Subquery(Box::new(Query::new(*query))),
+            },
+            sqlparser::ast::FunctionArguments::List(list) => Self {
+                r#type: function_atoms::list(),
+                value: FunctionArgumentsValue::List(FunctionArgumentList::from(list)),
+            },
+        }
+    }
+}
+
+impl From<sqlparser::ast::FunctionArgumentList> for FunctionArgumentList {
+    fn from(list: sqlparser::ast::FunctionArgumentList) -> Self {
+        Self {
+            duplicate_treatment: list.duplicate_treatment.map(|dt| match dt {
+                sqlparser::ast::DuplicateTreatment::Distinct => function_atoms::distinct(),
+                sqlparser::ast::DuplicateTreatment::All => function_atoms::all(),
+            }),
+            args: list.args.iter().map(|a| FunctionArg::from(a.clone())).collect(),
+            clauses: list.clauses.iter().map(|c| FunctionArgumentClause::from(c.clone())).collect(),
+        }
+    }
+}
+
+impl From<sqlparser::ast::FunctionArg> for FunctionArg {
+    fn from(arg: sqlparser::ast::FunctionArg) -> Self {
+        match arg {
+            sqlparser::ast::FunctionArg::Named { name, arg, operator } => Self {
+                r#type: function_atoms::named(),
+                name: Some(FunctionArgName::Ident(Ident::from(name))),
+                arg: FunctionArgExpr::from(arg),
+                operator: Some(match operator {
+                    sqlparser::ast::FunctionArgOperator::Equals => function_atoms::equals(),
+                    sqlparser::ast::FunctionArgOperator::RightArrow => function_atoms::right_arrow(),
+                    sqlparser::ast::FunctionArgOperator::Assignment => function_atoms::assignment(),
+                    sqlparser::ast::FunctionArgOperator::Colon => function_atoms::colon(),
+                    sqlparser::ast::FunctionArgOperator::Value => function_atoms::value(),
+                }),
+            },
+            sqlparser::ast::FunctionArg::ExprNamed { name, arg, operator } => Self {
+                r#type: function_atoms::expr_named(),
+                name: Some(FunctionArgName::Expr(Expr::new(name))),
+                arg: FunctionArgExpr::from(arg),
+                operator: Some(match operator {
+                    sqlparser::ast::FunctionArgOperator::Equals => function_atoms::equals(),
+                    sqlparser::ast::FunctionArgOperator::RightArrow => function_atoms::right_arrow(),
+                    sqlparser::ast::FunctionArgOperator::Assignment => function_atoms::assignment(),
+                    sqlparser::ast::FunctionArgOperator::Colon => function_atoms::colon(),
+                    sqlparser::ast::FunctionArgOperator::Value => function_atoms::value(),
+                }),
+            },
+            sqlparser::ast::FunctionArg::Unnamed(arg) => Self {
+                r#type: function_atoms::unnamed(),
+                name: None,
+                arg: FunctionArgExpr::from(arg),
+                operator: None,
+            },
+        }
+    }
+}
+
+impl From<sqlparser::ast::FunctionArgExpr> for FunctionArgExpr {
+    fn from(expr: sqlparser::ast::FunctionArgExpr) -> Self {
+        match expr {
+            sqlparser::ast::FunctionArgExpr::Expr(e) => Self {
+                r#type: function_atoms::expr(),
+                value: FunctionArgExprValue::Expr(Expr::new(e)),
+            },
+            sqlparser::ast::FunctionArgExpr::QualifiedWildcard(obj) => Self {
+                r#type: function_atoms::qualified_wildcard(),
+                value: FunctionArgExprValue::QualifiedWildcard(ObjectName {
+                    names: obj.0.iter().filter_map(|p| p.as_ident()).map(|i| Ident::from(i.clone())).collect(),
+                }),
+            },
+            sqlparser::ast::FunctionArgExpr::Wildcard => Self {
+                r#type: function_atoms::wildcard(),
+                value: FunctionArgExprValue::Wildcard(function_atoms::wildcard()),
+            },
+        }
+    }
+}
+
+impl From<sqlparser::ast::WindowType> for WindowType {
+    fn from(wt: sqlparser::ast::WindowType) -> Self {
+        match wt {
+            sqlparser::ast::WindowType::WindowSpec(spec) => Self {
+                r#type: function_atoms::window_spec(),
+                value: WindowTypeValue::WindowSpec(WindowSpec::from(spec)),
+            },
+            sqlparser::ast::WindowType::NamedWindow(name) => Self {
+                r#type: function_atoms::named_window(),
+                value: WindowTypeValue::NamedWindow(Ident::from(name)),
+            },
+        }
+    }
+}
+
+impl From<sqlparser::ast::WindowSpec> for WindowSpec {
+    fn from(spec: sqlparser::ast::WindowSpec) -> Self {
+        Self {
+            window_name: spec.window_name.map(Ident::from),
+            partition_by: spec.partition_by.iter().map(|e| Expr::new(e.clone())).collect(),
+            order_by: spec.order_by.iter().map(|o| OrderByExpr {
+                expr: Expr::new(o.expr.clone()),
+                asc: o.options.asc,
+                nulls_first: o.options.nulls_first,
+            }).collect(),
+            window_frame: spec.window_frame.map(WindowFrame::from),
+        }
+    }
+}
+
+impl From<sqlparser::ast::WindowFrame> for WindowFrame {
+    fn from(frame: sqlparser::ast::WindowFrame) -> Self {
+        Self {
+            units: match frame.units {
+                sqlparser::ast::WindowFrameUnits::Rows => function_atoms::rows(),
+                sqlparser::ast::WindowFrameUnits::Range => function_atoms::range(),
+                sqlparser::ast::WindowFrameUnits::Groups => function_atoms::groups(),
+            },
+            start_bound: WindowFrameBound::from(frame.start_bound),
+            end_bound: frame.end_bound.map(WindowFrameBound::from),
+        }
+    }
+}
+
+impl From<sqlparser::ast::WindowFrameBound> for WindowFrameBound {
+    fn from(bound: sqlparser::ast::WindowFrameBound) -> Self {
+        match bound {
+            sqlparser::ast::WindowFrameBound::CurrentRow => Self {
+                r#type: function_atoms::current_row(),
+                value: None,
+            },
+            sqlparser::ast::WindowFrameBound::Preceding(None) => Self {
+                r#type: function_atoms::unbounded_preceding(),
+                value: None,
+            },
+            sqlparser::ast::WindowFrameBound::Preceding(Some(expr)) => Self {
+                r#type: function_atoms::preceding(),
+                value: Some(Box::new(Expr::new(*expr))),
+            },
+            sqlparser::ast::WindowFrameBound::Following(None) => Self {
+                r#type: function_atoms::unbounded_following(),
+                value: None,
+            },
+            sqlparser::ast::WindowFrameBound::Following(Some(expr)) => Self {
+                r#type: function_atoms::following(),
+                value: Some(Box::new(Expr::new(*expr))),
+            },
+        }
+    }
+}
+
+impl From<sqlparser::ast::FunctionArgumentClause> for FunctionArgumentClause {
+    fn from(clause: sqlparser::ast::FunctionArgumentClause) -> Self {
+        match clause {
+            sqlparser::ast::FunctionArgumentClause::IgnoreOrRespectNulls(nt) => Self {
+                r#type: function_atoms::ignore_or_respect_nulls(),
+                value: FunctionArgumentClauseValue::IgnoreOrRespectNulls(match nt {
+                    sqlparser::ast::NullTreatment::IgnoreNulls => function_atoms::ignore_nulls(),
+                    sqlparser::ast::NullTreatment::RespectNulls => function_atoms::respect_nulls(),
+                }),
+            },
+            sqlparser::ast::FunctionArgumentClause::OrderBy(order_by) => Self {
+                r#type: function_atoms::order_by(),
+                value: FunctionArgumentClauseValue::OrderBy(
+                    order_by.iter().map(|o| OrderByExpr {
+                        expr: Expr::new(o.expr.clone()),
+                        asc: o.options.asc,
+                        nulls_first: o.options.nulls_first,
+                    }).collect()
+                ),
+            },
+            sqlparser::ast::FunctionArgumentClause::Limit(expr) => Self {
+                r#type: function_atoms::limit(),
+                value: FunctionArgumentClauseValue::Limit(Expr::new(expr)),
+            },
+            _ => Self {
+                r#type: result_atoms::not_implemented(),
+                value: FunctionArgumentClauseValue::NotImplemented(result_atoms::not_implemented()),
+            },
+        }
+    }
+}
+
+// =============================================================================
+// Function From Implementations (Elixir → sqlparser)
+// =============================================================================
+
+impl From<Function> for sqlparser::ast::Function {
+    fn from(func: Function) -> Self {
+        sqlparser::ast::Function {
+            name: sqlparser::ast::ObjectName::from(func.name),
+            uses_odbc_syntax: func.uses_odbc_syntax,
+            parameters: sqlparser::ast::FunctionArguments::from(func.parameters),
+            args: sqlparser::ast::FunctionArguments::from(func.args),
+            filter: func.filter.map(|e| Box::new(sqlparser::ast::Expr::from(*e))),
+            null_treatment: func.null_treatment.map(|nt| {
+                if nt == function_atoms::ignore_nulls() {
+                    sqlparser::ast::NullTreatment::IgnoreNulls
+                } else {
+                    sqlparser::ast::NullTreatment::RespectNulls
+                }
+            }),
+            over: func.over.map(sqlparser::ast::WindowType::from),
+            within_group: vec![],
+        }
+    }
+}
+
+impl From<FunctionArguments> for sqlparser::ast::FunctionArguments {
+    fn from(args: FunctionArguments) -> Self {
+        match args.value {
+            FunctionArgumentsValue::None(_) => sqlparser::ast::FunctionArguments::None,
+            FunctionArgumentsValue::Subquery(query) => {
+                // Convert Query to sqlparser::ast::Query manually
+                let q = *query;
+                sqlparser::ast::FunctionArguments::Subquery(Box::new(sqlparser::ast::Query {
+                    body: Box::new(sqlparser::ast::SetExpr::from(q.body)),
+                    limit_clause: q.limit.map(|expr| sqlparser::ast::LimitClause::LimitOffset {
+                        limit: Some(sqlparser::ast::Expr::from(expr)),
+                        offset: None,
+                        limit_by: vec![],
+                    }),
+                    with: None,
+                    order_by: if q.order_by.is_empty() {
+                        None
+                    } else {
+                        Some(sqlparser::ast::OrderBy {
+                            kind: sqlparser::ast::OrderByKind::Expressions(
+                                q.order_by.iter().map(|l| sqlparser::ast::OrderByExpr::from(l.clone())).collect()
+                            ),
+                            interpolate: None,
+                        })
+                    },
+                    locks: vec![],
+                    fetch: None,
+                    for_clause: None,
+                    settings: None,
+                    format_clause: None,
+                }))
+            }
+            FunctionArgumentsValue::List(list) => {
+                sqlparser::ast::FunctionArguments::List(sqlparser::ast::FunctionArgumentList::from(list))
+            }
+        }
+    }
+}
+
+impl From<FunctionArgumentList> for sqlparser::ast::FunctionArgumentList {
+    fn from(list: FunctionArgumentList) -> Self {
+        Self {
+            duplicate_treatment: list.duplicate_treatment.map(|dt| {
+                if dt == function_atoms::distinct() {
+                    sqlparser::ast::DuplicateTreatment::Distinct
+                } else {
+                    sqlparser::ast::DuplicateTreatment::All
+                }
+            }),
+            args: list.args.iter().map(|a| sqlparser::ast::FunctionArg::from(a.clone())).collect(),
+            clauses: list.clauses.iter().map(|c| sqlparser::ast::FunctionArgumentClause::from(c.clone())).collect(),
+        }
+    }
+}
+
+impl From<FunctionArg> for sqlparser::ast::FunctionArg {
+    fn from(arg: FunctionArg) -> Self {
+        let operator = arg.operator.map(|op| {
+            if op == function_atoms::equals() {
+                sqlparser::ast::FunctionArgOperator::Equals
+            } else if op == function_atoms::right_arrow() {
+                sqlparser::ast::FunctionArgOperator::RightArrow
+            } else if op == function_atoms::assignment() {
+                sqlparser::ast::FunctionArgOperator::Assignment
+            } else if op == function_atoms::colon() {
+                sqlparser::ast::FunctionArgOperator::Colon
+            } else {
+                sqlparser::ast::FunctionArgOperator::Value
+            }
+        }).unwrap_or(sqlparser::ast::FunctionArgOperator::Equals);
+
+        match arg.name {
+            Some(FunctionArgName::Ident(ident)) => sqlparser::ast::FunctionArg::Named {
+                name: sqlparser::ast::Ident::from(ident),
+                arg: sqlparser::ast::FunctionArgExpr::from(arg.arg),
+                operator,
+            },
+            Some(FunctionArgName::Expr(expr)) => sqlparser::ast::FunctionArg::ExprNamed {
+                name: sqlparser::ast::Expr::from(expr),
+                arg: sqlparser::ast::FunctionArgExpr::from(arg.arg),
+                operator,
+            },
+            None => sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::from(arg.arg)),
+        }
+    }
+}
+
+impl From<FunctionArgExpr> for sqlparser::ast::FunctionArgExpr {
+    fn from(expr: FunctionArgExpr) -> Self {
+        match expr.value {
+            FunctionArgExprValue::Expr(e) => sqlparser::ast::FunctionArgExpr::Expr(sqlparser::ast::Expr::from(e)),
+            FunctionArgExprValue::QualifiedWildcard(obj) => {
+                sqlparser::ast::FunctionArgExpr::QualifiedWildcard(sqlparser::ast::ObjectName::from(obj))
+            }
+            FunctionArgExprValue::Wildcard(_) => sqlparser::ast::FunctionArgExpr::Wildcard,
+        }
+    }
+}
+
+impl From<WindowType> for sqlparser::ast::WindowType {
+    fn from(wt: WindowType) -> Self {
+        match wt.value {
+            WindowTypeValue::WindowSpec(spec) => {
+                sqlparser::ast::WindowType::WindowSpec(sqlparser::ast::WindowSpec::from(spec))
+            }
+            WindowTypeValue::NamedWindow(name) => {
+                sqlparser::ast::WindowType::NamedWindow(sqlparser::ast::Ident::from(name))
+            }
+        }
+    }
+}
+
+impl From<WindowSpec> for sqlparser::ast::WindowSpec {
+    fn from(spec: WindowSpec) -> Self {
+        Self {
+            window_name: spec.window_name.map(sqlparser::ast::Ident::from),
+            partition_by: spec.partition_by.iter().map(|e| sqlparser::ast::Expr::from(e.clone())).collect(),
+            order_by: spec.order_by.iter().map(|o| sqlparser::ast::OrderByExpr::from(o.clone())).collect(),
+            window_frame: spec.window_frame.map(sqlparser::ast::WindowFrame::from),
+        }
+    }
+}
+
+impl From<WindowFrame> for sqlparser::ast::WindowFrame {
+    fn from(frame: WindowFrame) -> Self {
+        Self {
+            units: if frame.units == function_atoms::rows() {
+                sqlparser::ast::WindowFrameUnits::Rows
+            } else if frame.units == function_atoms::range() {
+                sqlparser::ast::WindowFrameUnits::Range
+            } else {
+                sqlparser::ast::WindowFrameUnits::Groups
+            },
+            start_bound: sqlparser::ast::WindowFrameBound::from(frame.start_bound),
+            end_bound: frame.end_bound.map(sqlparser::ast::WindowFrameBound::from),
+        }
+    }
+}
+
+impl From<WindowFrameBound> for sqlparser::ast::WindowFrameBound {
+    fn from(bound: WindowFrameBound) -> Self {
+        if bound.r#type == function_atoms::current_row() {
+            sqlparser::ast::WindowFrameBound::CurrentRow
+        } else if bound.r#type == function_atoms::unbounded_preceding() {
+            sqlparser::ast::WindowFrameBound::Preceding(None)
+        } else if bound.r#type == function_atoms::preceding() {
+            sqlparser::ast::WindowFrameBound::Preceding(bound.value.map(|e| Box::new(sqlparser::ast::Expr::from(*e))))
+        } else if bound.r#type == function_atoms::unbounded_following() {
+            sqlparser::ast::WindowFrameBound::Following(None)
+        } else {
+            sqlparser::ast::WindowFrameBound::Following(bound.value.map(|e| Box::new(sqlparser::ast::Expr::from(*e))))
+        }
+    }
+}
+
+impl From<FunctionArgumentClause> for sqlparser::ast::FunctionArgumentClause {
+    fn from(clause: FunctionArgumentClause) -> Self {
+        match clause.value {
+            FunctionArgumentClauseValue::IgnoreOrRespectNulls(nt) => {
+                sqlparser::ast::FunctionArgumentClause::IgnoreOrRespectNulls(
+                    if nt == function_atoms::ignore_nulls() {
+                        sqlparser::ast::NullTreatment::IgnoreNulls
+                    } else {
+                        sqlparser::ast::NullTreatment::RespectNulls
+                    }
+                )
+            }
+            FunctionArgumentClauseValue::OrderBy(order_by) => {
+                sqlparser::ast::FunctionArgumentClause::OrderBy(
+                    order_by.iter().map(|o| sqlparser::ast::OrderByExpr::from(o.clone())).collect()
+                )
+            }
+            FunctionArgumentClauseValue::Limit(expr) => {
+                sqlparser::ast::FunctionArgumentClause::Limit(sqlparser::ast::Expr::from(expr))
+            }
+            FunctionArgumentClauseValue::NotImplemented(_) => {
+                // This shouldn't happen in practice, use a safe default
+                sqlparser::ast::FunctionArgumentClause::IgnoreOrRespectNulls(
+                    sqlparser::ast::NullTreatment::RespectNulls
+                )
+            }
         }
     }
 }
@@ -1354,6 +2070,6 @@ impl Query {
 #[derive(Clone, NifUntaggedEnum)]
 // #[rustler(encode)]
 pub enum Statement {
-    Query(Query),
+    Query(Box<Query>),
     NotImplemented(Atom),
 }
